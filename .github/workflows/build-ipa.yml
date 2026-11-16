@@ -1,0 +1,129 @@
+# .github/workflows/build-ipa.yml
+#
+# Builds the unified iOS-VM IPA (macOS via Henge + Windows 11 via WindowsiOS + Linux via Crate)
+# using Henge's original UI, and publishes a GitHub Release on tag push (v*) or manual release dispatch.
+
+name: Build iOS-VM IPA
+
+on:
+  push:
+    branches: ['main']
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Optional tag name to publish a GitHub Release (e.g. v0.1.0)
+        required: false
+
+permissions:
+  contents: write
+
+env:
+  HUSK: ${{ github.workspace }}/Husk
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out iOS-VM
+        uses: actions/checkout@v4
+        with:
+          path: iOS-VM
+
+      - name: Check out Husk (StikJIT + rppairing)
+        uses: actions/checkout@v4
+        with:
+          repository: Leviidev/Husk
+          path: Husk
+
+      - name: Cache Rust pairing build and Crate frameworks
+        uses: actions/cache@v4
+        with:
+          path: |
+            Husk/src/rppairing-ios/target
+            iOS-VM/ios/Frameworks
+          key: ios-vm-deps-${{ hashFiles('iOS-VM/ios/scripts/crate/*.sh', 'Husk/src/rppairing-ios/Cargo.lock') }}
+
+      - name: Install build tools
+        run: |
+          set -euxo pipefail
+          brew install xcodegen cmake
+          rustup target add aarch64-apple-ios || {
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            rustup target add aarch64-apple-ios
+          }
+
+      - name: Build Husk on-device pairing library
+        working-directory: Husk
+        run: bash scripts/build_rppairing_ios.sh
+
+      - name: Fetch Henge deps (StikJIT + rppairing)
+        working-directory: iOS-VM
+        run: zsh ios/scripts/fetch_deps.sh
+
+      - name: Fetch Crate engine and shared frameworks (Slirp, GLib, GPU)
+        working-directory: iOS-VM
+        run: |
+          bash ios/scripts/crate/fetch-frameworks.sh
+          bash ios/scripts/crate/fetch-crate.sh
+
+      - name: Build the restore stack
+        working-directory: iOS-VM
+        run: zsh tools/build_ios_restore.sh
+
+      - name: Build Henge engine and helpers
+        working-directory: iOS-VM
+        run: make ios-lib build/henge-agent.gz build/tl-samples.dmg
+
+      - name: Build WindowsiOS WinVM.framework
+        working-directory: iOS-VM
+        run: make -C engines/windows ios-framework
+
+      - name: Package iOS-VM.ipa
+        working-directory: iOS-VM
+        env:
+          HENGE_IPA_OUT: ${{ runner.temp }}/out/iOS-VM.ipa
+        run: |
+          mkdir -p "${{ runner.temp }}/out"
+          zsh ios/scripts/package_ipa.sh
+
+      - name: Package iOS-VM.tipa
+        working-directory: iOS-VM
+        run: |
+          zsh ios/scripts/package_ipa.sh --trollstore
+          cp /Users/runner/Desktop/Henge.tipa "${{ runner.temp }}/out/iOS-VM.tipa"
+          cd "${{ runner.temp }}/out"
+          shasum -a 256 iOS-VM.ipa iOS-VM.tipa > checksums.sha256
+          cat checksums.sha256
+
+      - name: Upload IPA & TIPA artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: iOS-VM-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/out/iOS-VM.ipa
+            ${{ runner.temp }}/out/iOS-VM.tipa
+            ${{ runner.temp }}/out/checksums.sha256
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: github.ref_type == 'tag' || inputs.release_tag != ''
+        working-directory: ${{ runner.temp }}/out
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          cat > notes.md <<EOF
+          Unified iOS VM app integrating:
+          - **macOS** ([Leviidev/Henge](https://github.com/Leviidev/Henge)) — HengeVM engine & original Henge UI
+          - **Windows 11 ARM64** ([ammaarreshi/WindowsiOS](https://github.com/ammaarreshi/WindowsiOS)) — WinVM (4 KB MMU, UEFI/ACPI, NVMe, xHCI, Intel HD Audio, Safari OAuth bridge)
+          - **Linux** ([oneamendez/crate-ios](https://github.com/oneamendez/crate-ios)) — Crate engine with VirGL/ANGLE/MoltenVK 3D GPU acceleration & SwiftTerm serial console
+
+          Built from \`$GITHUB_SHA\`. Unsigned ad-hoc IPA (sign with SideStore / AltStore / personal dev cert) and TrollStore TIPA.
+          EOF
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --title "iOS-VM $TAG" \
+            --notes-file notes.md \
+            iOS-VM.ipa iOS-VM.tipa checksums.sha256

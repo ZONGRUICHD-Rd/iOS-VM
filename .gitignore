@@ -1,0 +1,7 @@
+build/
+engines/windows/build/
+ios/build/
+ios/deps/
+ios/Frameworks/
+ios/*.xcodeproj/
+.DS_Store

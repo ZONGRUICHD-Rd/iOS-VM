@@ -1,0 +1,201 @@
+name: Henge
+options:
+  bundleIdPrefix: com.henge
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+
+packages:
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    exactVersion: 1.18.0
+
+settings:
+  base:
+    HENGE_BUNDLE_IDENTIFIER: com.henge.app
+    HENGE_ENTITLEMENTS: Henge/Henge.entitlements
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: YES
+    ENABLE_BITCODE: NO
+    SWIFT_VERSION: "5.0"
+    SWIFT_OPTIMIZATION_LEVEL: "-O"
+    GCC_OPTIMIZATION_LEVEL: "2"
+    CLANG_C_LANGUAGE_STANDARD: c11
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+
+targets:
+  Henge:
+    type: application
+    platform: iOS
+    sources:
+      - path: Henge
+        excludes:
+          - "Resources/**"
+          - "Info.plist"
+          - "Henge.entitlements"
+          - "Henge.personal.entitlements"
+          - "AppIcon.icon/**"
+          - "AppIcon.icon"
+      - path: Henge/Resources
+        buildPhase: resources
+      - path: Henge/AppIcon.icon
+        type: file
+        buildPhase: resources
+      - path: HengeJITHelper/HengeJITMessages.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(HENGE_BUNDLE_IDENTIFIER)
+        PRODUCT_NAME: Henge
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Automatic
+        INFOPLIST_FILE: Henge/Info.plist
+        CODE_SIGN_ENTITLEMENTS: $(HENGE_ENTITLEMENTS)
+        SWIFT_OBJC_BRIDGING_HEADER: Henge/HengeBridge.h
+        TARGETED_DEVICE_FAMILY: "1,2"
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/Frameworks"
+        HEADER_SEARCH_PATHS:
+          - "$(SRCROOT)/../core"
+          - "$(SRCROOT)/../host"
+          - "$(SRCROOT)/../devices"
+        FRAMEWORK_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(SRCROOT)/../engines/windows/build/ios"
+        LIBRARY_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(SRCROOT)/../build/ios"
+          - "$(SRCROOT)/deps/lib"
+        OTHER_LDFLAGS:
+          - "$(inherited)"
+          - "-lhengevm"
+          - "-lhengerestore"
+          - "-lz"
+          - "-liconv"
+          - "-lresolv"
+          - "-lcompression"
+          - "-lhengetl"
+          - "-ObjC"
+          - "-lbz2"
+          - "-lhusk_rppairing"
+          - "-framework"
+          - "Metal"
+          - "-framework"
+          - "IOSurface"
+          - "-framework"
+          - "AudioToolbox"
+          - "-framework"
+          - "AVFAudio"
+          - "-framework"
+          - "CoreFoundation"
+          - "-framework"
+          - "QuartzCore"
+          - "-framework"
+          - "CoreText"
+          - "-framework"
+          - "ImageIO"
+          - "-framework"
+          - "CoreVideo"
+          - "-framework"
+          - "UniformTypeIdentifiers"
+          - "-framework"
+          - "SafariServices"
+    dependencies:
+      - target: HengeJITHelper
+      - framework: Frameworks/Crate.xcframework
+        embed: false
+      - framework: Frameworks/Slirp.xcframework
+        embed: true
+      - framework: Frameworks/GLib.xcframework
+        embed: true
+      - framework: ../engines/windows/build/ios/WinVM.framework
+        embed: true
+      - package: SwiftTerm
+    preBuildScripts:
+      - name: Build the engine
+        script: |
+          set -e
+          cd "$SRCROOT/.."
+          env -u SDKROOT -u IPHONEOS_DEPLOYMENT_TARGET make ios-lib build/henge-agent.gz build/tl-samples.dmg
+          env -u SDKROOT -u IPHONEOS_DEPLOYMENT_TARGET ./tools/build_ios_restore.sh
+          env -u SDKROOT -u IPHONEOS_DEPLOYMENT_TARGET make -C engines/windows ios-framework
+        basedOnDependencyAnalysis: false
+    postBuildScripts:
+      - name: Bundle the Mac helper
+        script: |
+          set -e
+          cp "$SRCROOT/../build/henge-agent.gz" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/henge-agent.gz"
+          rm -f "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/tl-samples.dmg"
+          cp -X "$SRCROOT/../build/tl-samples.dmg" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/tl-samples.dmg"
+        basedOnDependencyAnalysis: false
+      - name: Embed StikJIT
+        script: |
+          set -e
+          SRC="$SRCROOT/deps/StikJIT.xcframework/ios-arm64/StikJIT.framework"
+          DST="$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH/StikJIT.framework"
+          rm -rf "$DST"
+          mkdir -p "$(dirname "$DST")"
+          ditto "$SRC" "$DST"
+          rm -rf "$DST/Headers" "$DST/Modules"
+          PLIST="$DST/Info.plist"
+          if [ ! -f "$PLIST" ]; then
+            plutil -create xml1 "$PLIST"
+            plutil -insert CFBundleIdentifier -string "$PRODUCT_BUNDLE_IDENTIFIER.StikJIT" "$PLIST"
+            plutil -insert CFBundleExecutable -string StikJIT "$PLIST"
+            plutil -insert CFBundleName -string StikJIT "$PLIST"
+            plutil -insert CFBundlePackageType -string FMWK "$PLIST"
+            plutil -insert CFBundleInfoDictionaryVersion -string 6.0 "$PLIST"
+            plutil -insert CFBundleShortVersionString -string 1.9.0 "$PLIST"
+            plutil -insert CFBundleVersion -string 1.9.0 "$PLIST"
+            plutil -insert MinimumOSVersion -string 18.0 "$PLIST"
+            plutil -insert CFBundleSupportedPlatforms -array "$PLIST"
+            plutil -insert CFBundleSupportedPlatforms.0 -string iPhoneOS "$PLIST"
+          fi
+          if [ -n "$EXPANDED_CODE_SIGN_IDENTITY" ] && [ "$CODE_SIGNING_ALLOWED" != "NO" ]; then
+            codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --timestamp=none "$DST"
+          fi
+        basedOnDependencyAnalysis: false
+      - name: Embed GPU frameworks
+        script: |
+          set -e
+          [ "$PLATFORM_NAME" = iphoneos ] || exit 0
+          SRC="$SRCROOT/Frameworks/GPU"
+          NAMES="MoltenVK EGL GLESv2 epoxy virglrenderer.1"
+          for name in $NAMES; do
+            [ -d "$SRC/$name.framework" ] || {
+              echo "warning: no $name.framework, so Linux VMs fall back to 2D"
+              exit 0
+            }
+          done
+          DEST="$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH"
+          mkdir -p "$DEST"
+          for name in $NAMES; do
+            rsync -a --delete "$SRC/$name.framework" "$DEST/"
+            if [ -n "$EXPANDED_CODE_SIGN_IDENTITY" ] && [ "$CODE_SIGNING_ALLOWED" != "NO" ]; then
+              codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --timestamp=none "$DEST/$name.framework"
+            fi
+          done
+        basedOnDependencyAnalysis: false
+
+  HengeJITHelper:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: HengeJITHelper
+        excludes:
+          - "Info.plist"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(HENGE_BUNDLE_IDENTIFIER).JITHelper
+        INFOPLIST_FILE: HengeJITHelper/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        APPLICATION_EXTENSION_API_ONLY: YES
+        CODE_SIGN_STYLE: Automatic
+        TARGETED_DEVICE_FAMILY: "1,2"
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/../../Frameworks"
+    dependencies:
+      - framework: deps/StikJIT.xcframework
+        embed: false
