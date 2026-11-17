@@ -10,6 +10,7 @@
 #include <mach/mach_time.h>
 #include <os/lock.h>
 #include <os/proc.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 
 static WinIOSBridge *s_shared_bridge = nil;
@@ -330,10 +331,15 @@ static void unpack_progress_cb(uint64_t done, uint64_t total, void *opaque) {
     setenv("HV_RAM_FILE", ramBacking.fileSystemRepresentation, 1);
 
     uint64_t ramMB = reqRamMB >= 1024 ? reqRamMB : 3072;
-    uint64_t availMB = [self availableMemoryMB];
-    if (availMB > 1800 && ramMB > availMB - 768) {
-        /* hv_winvirt_create tries ledger-exempt RAM first; keep requested size if ledger-exempt succeeds,
-         * or cap safely if RAM file is needed. */
+    /* Probe contiguous virtual address space (ramMB + 256 MB headroom for pflash/DTB) and step down if needed. */
+    while (ramMB > 1024) {
+        size_t probe = (size_t)((ramMB + 256ULL) << 20);
+        void *p = mmap(NULL, probe, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        if (p != MAP_FAILED) {
+            munmap(p, probe);
+            break;
+        }
+        ramMB = (ramMB > 1536) ? (ramMB - 512) : 1024;
     }
 
     NSString *sharedDir = [[self documentsPath] stringByAppendingPathComponent:@"Shared"];

@@ -3,6 +3,7 @@
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <TargetConditionals.h>
+#include <errno.h>
 #include <os/lock.h>
 #include <pthread.h>
 #include <pthread/qos.h>
@@ -162,14 +163,20 @@ int hv_winvm_create(const HvWinVmConfig *c, char *err, size_t errlen) {
         d0_ptr = &disk0;
     }
     if (c->disk1 && *c->disk1) {
-        if (hv_disk_open(&disk1, c->disk1, 0, 1) != 0)
+        if (hv_disk_open(&disk1, c->disk1, 0, 1) != 0) {
+            if (d0_ptr) hv_disk_close(d0_ptr);
             return fail(err, errlen, "Cannot open secondary/installer disk image.");
+        }
         d1_ptr = &disk1;
     }
 
     size_t jit = c->jit_bytes ? c->jit_bytes : ((size_t)768 << 20);
     int r = c->jit_rx ? hv_machine_init_jit(&m, c->jit_rx, c->jit_rw, jit) : hv_machine_init(&m, jit);
-    if (r != 0) return fail(err, errlen, "Cannot initialize ARM64 JIT region (is JIT active?).");
+    if (r != 0) {
+        if (d0_ptr) hv_disk_close(d0_ptr);
+        if (d1_ptr) hv_disk_close(d1_ptr);
+        return fail(err, errlen, "Cannot initialize ARM64 JIT region (is JIT active?).");
+    }
 
 #if TARGET_OS_IPHONE
     /* Defer synchronous guest NVMe FLUSH fsyncs on iOS APFS NAND; explicit host checkpoints call hv_disk_sync(). */
@@ -184,9 +191,28 @@ int hv_winvm_create(const HvWinVmConfig *c, char *err, size_t errlen) {
 
     uint64_t ram_bytes = (c->ram_mb ? c->ram_mb : 4096ULL) << 20;
     static const uint8_t mac[6] = {0x02, 0x57, 0x49, 0x4e, 0x00, 0x01};
-    if (hv_winvirt_create(&board, &m, cpus, ncpus, ram_bytes, c->prealloc_ram, c->code_fd, c->vars_fd,
-                          d0_ptr, d1_ptr, mac, c->enable_sound) != 0) {
-        return fail(err, errlen, "Cannot create virtual ARM64 Windows board (insufficient RAM or missing firmware).");
+    int brc = hv_winvirt_create(&board, &m, cpus, ncpus, ram_bytes, c->prealloc_ram, c->code_fd, c->vars_fd,
+                                d0_ptr, d1_ptr, mac, c->enable_sound);
+    if (brc != 0) {
+        int saved_errno = errno;
+        if (d0_ptr) hv_disk_close(d0_ptr);
+        if (d1_ptr) hv_disk_close(d1_ptr);
+        if (err && errlen) {
+            if (brc == -2) {
+                snprintf(err, errlen,
+                         "Cannot allocate %llu MB guest RAM (%s). Lower VM Memory or JIT Code Cache.",
+                         (unsigned long long)(ram_bytes >> 20), strerror(saved_errno));
+            } else if (brc == -4) {
+                snprintf(err, errlen, "Cannot open UEFI firmware code.fd (%s).", strerror(saved_errno));
+            } else if (brc == -5) {
+                snprintf(err, errlen, "Cannot open UEFI NVRAM vars.fd (%s).", strerror(saved_errno));
+            } else if (brc == -3) {
+                snprintf(err, errlen, "Cannot build ARM64 device tree for Windows VM.");
+            } else {
+                snprintf(err, errlen, "Cannot create virtual ARM64 Windows board (insufficient RAM or missing firmware).");
+            }
+        }
+        return -1;
     }
     hv_winvirt_reset_cpu(&board);
 

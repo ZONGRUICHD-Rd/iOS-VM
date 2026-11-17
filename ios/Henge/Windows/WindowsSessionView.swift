@@ -315,13 +315,18 @@ private final class WindowsSessionController: ObservableObject {
             errorMessage = "JIT region is not ready. Turn on JIT first."
             return
         }
+        let ram = GuestMemory.prepare(mac)
+        guard ram >= 1024 else {
+            errorMessage = "Not enough memory or free storage for Windows (\(ram) MB available; need at least 1024 MB)."
+            return
+        }
         let b = WinIOSBridge.shared
         b.prepareAndStart(
             inDirectory: mac.directory.path,
             jitRx: rx,
             jitRw: rw,
             jitBytes: mapping.size,
-            ramMB: UInt64(mac.ramMB),
+            ramMB: ram,
             cpus: Int32(cpus),
             layer: nil
         )

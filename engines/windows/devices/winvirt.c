@@ -152,22 +152,22 @@ int hv_winvirt_create(HvWinVirt *b, HvMachine *m, HvCpu *cpu, int ncpus, uint64_
     }
     if (b->ram == MAP_FAILED)
         b->ram = mmap(NULL, ram_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (b->ram == MAP_FAILED) return -1;
+    if (b->ram == MAP_FAILED) return -2;
 
     /* 2. Build Flattened Device Tree (placed at 0x40000000 on every reset) */
     b->dtb = hv_fdt_build_virt(b->ncpus, WINVIRT_RAM_PA, ram_size, &b->dtb_size);
-    if (!b->dtb || b->dtb_size > ram_size) return -1;
+    if (!b->dtb || b->dtb_size > ram_size) return -3;
 
     /* 3. Flash banks: pflash0 (64 MB read-only UEFI code HvRam) & pflash1 (64 MB persistent CFI01 NVRAM) */
     b->flash0 = hv_pflash_create(m, WINVIRT_FLASH0_PA, code_fd_path, 1);
     if (!b->flash0) {
         fprintf(stderr, "winvm: failed to load UEFI firmware %s\n", code_fd_path ? code_fd_path : "(null)");
-        return -1;
+        return -4;
     }
     b->flash1 = hv_pflash_create(m, WINVIRT_FLASH1_PA, vars_fd_path, 0);
     if (!b->flash1) {
         fprintf(stderr, "winvm: failed to open UEFI NVRAM %s\n", vars_fd_path ? vars_fd_path : "(null)");
-        return -1;
+        return -5;
     }
 
     /* 4. Register Guest RAM at 0x40000000 */
